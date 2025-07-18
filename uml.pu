@@ -1,0 +1,39 @@
+@startuml
+
+package "Frameworks & Drivers" {
+    database "PostgreSQL" as db
+    [Main]
+    [Cognito API]
+    [External Web Site] as "External Web Site"
+    [Bedrock API] 
+}
+
+package "Interface Adapters" {
+    [Repository]
+    [Controller]
+    [AuthMiddleware] ..> [Cognito API]
+    [Scraper]..> [External Web Site]
+    [LLM Client Impl] ..> [Bedrock API]
+}
+
+package "Use Case" {
+    [UseCase] .> [RecipeRepository]
+    [RecipeRepository] <<interface>>
+    [LLMClient] <<interface>>
+    [RecipeScraper] <<interface>>
+    [UseCase] .> [LLMClient]
+    [UseCase] .> [RecipeScraper]
+}
+
+db <.. [Repository]
+[Main] --> [Controller] 
+[Main] --> [Repository]
+[Main] --> [AuthMiddleware]
+[Controller] ..> [UseCase]
+[Scraper] ..|> [RecipeScraper] : implements
+[Repository] ..|> [RecipeRepository] : implements
+[LLM Client Impl] ..|> [LLMClient] : implements
+[UseCase] ..> [Entity]
+[Entity]
+
+@enduml
