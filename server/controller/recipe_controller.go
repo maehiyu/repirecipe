@@ -4,8 +4,8 @@ import (
 	"log"
 	"net/http"
 
-	"repirecipe/usecase"
 	"repirecipe/entity"
+	"repirecipe/usecase"
 
 	"github.com/gin-gonic/gin"
 )
@@ -79,4 +79,31 @@ func (rc *RecipeController) CreateRecipe(c *gin.Context) {
 	c.JSON(http.StatusCreated, gin.H{"message": "recipe created successfully"})
 }
 
+func (rc *RecipeController) UpdateRecipe(c *gin.Context) {
+	id := c.Param("id")
 
+	var recipe entity.RecipeDetail
+	if err := c.ShouldBindJSON(&recipe); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		log.Println("Error binding JSON:", err)
+		return
+	}
+	recipe.RecipeID = id 
+	if err := rc.Interactor.UpdateRecipe(c.Request.Context(), &recipe); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		log.Println("Error updating recipe:", err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "recipe updated successfully"})
+}
+
+func (rc *RecipeController) DeleteRecipe(c *gin.Context) {
+	id := c.Param("id")
+
+	if err := rc.Interactor.DeleteRecipe(c.Request.Context(), id); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		log.Println("Error deleting recipe:", err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "recipe deleted successfully"})
+}

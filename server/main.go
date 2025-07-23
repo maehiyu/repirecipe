@@ -51,9 +51,10 @@ func main() {
 
 	protected.GET("/recipes", c.GetRecipes)
 	protected.POST("/recipes", c.CreateRecipe)
-	// protected.PUT("/recipes", c.UpdateRecipe)
+	protected.PUT("/recipes", c.UpdateRecipe)
 	// protected.GET("/recipes/search", c.SearchRecipes)
 	protected.GET("/recipes/:id", c.GetRecipe)
+	protected.DELETE("/recipes/:id", c.DeleteRecipe)
 	// protected.POST("/recipes/fetch", c.FetchRecipe)
 	// protected.DELETE("/account", c.DeleteAccount)
 

@@ -9,29 +9,29 @@ package "Frameworks & Drivers" {
 }
 
 package "Interface Adapters" {
-    [Repository]
+    [PostgresRepository]
     [Controller]
     [AuthMiddleware] ..> [Cognito API]
-    [Scraper]..> [External Web Site]
+    [RecipeScraper]..> [External Web Site]
     [LLM Client Impl] ..> [Bedrock API]
 }
 
 package "Use Case" {
-    [UseCase] .> [RecipeRepository]
-    [RecipeRepository] <<interface>>
+    [UseCase] .> [Repository]
+    [Repository] <<interface>>
     [LLMClient] <<interface>>
-    [RecipeScraper] <<interface>>
+    [Scraper] <<interface>>
     [UseCase] .> [LLMClient]
-    [UseCase] .> [RecipeScraper]
+    [UseCase] .> [Scraper]
 }
 
-db <.. [Repository]
+db <.. [PostgresRepository]
 [Main] --> [Controller] 
-[Main] --> [Repository]
+[Main] --> [PostgresRepository]
 [Main] --> [AuthMiddleware]
 [Controller] ..> [UseCase]
-[Scraper] ..|> [RecipeScraper] : implements
-[Repository] ..|> [RecipeRepository] : implements
+[RecipeScraper] ..|> [Scraper] : implements
+[PostgresRepository] ..|> [Repository] : implements
 [LLM Client Impl] ..|> [LLMClient] : implements
 [UseCase] ..> [Entity]
 [Entity]
