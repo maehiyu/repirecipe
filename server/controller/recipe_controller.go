@@ -3,9 +3,9 @@ package controller
 import (
 	"log"
 	"net/http"
-
 	"repirecipe/entity"
 	"repirecipe/usecase"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 )
@@ -88,7 +88,7 @@ func (rc *RecipeController) UpdateRecipe(c *gin.Context) {
 		log.Println("Error binding JSON:", err)
 		return
 	}
-	recipe.RecipeID = id 
+	recipe.RecipeID = id
 	if err := rc.Interactor.UpdateRecipe(c.Request.Context(), &recipe); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		log.Println("Error updating recipe:", err)
@@ -106,4 +106,71 @@ func (rc *RecipeController) DeleteRecipe(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "recipe deleted successfully"})
+}
+
+func (rc *RecipeController) FetchRecipe(c *gin.Context) {
+	url := c.PostForm("url")
+
+	recipe, err := rc.Interactor.ScrapeRecipe(c, url)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to scrape recipe"})
+		log.Println("Error scraping recipe:", err)
+		return
+	}
+
+	userId, ok := getUserIDFromContext(c)
+	if !ok {
+		return
+	}
+
+	if err := rc.Interactor.CreateRecipe(c.Request.Context(), userId, recipe); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		log.Println("Error creating recipe after scrape:", err)
+		return
+	}
+
+	c.JSON(http.StatusCreated, gin.H{"message": "recipe created successfully", "recipe": recipe})
+}
+
+// アカウント削除（ユーザーの全レシピと関連データを削除）
+func (rc *RecipeController) DeleteAccount(c *gin.Context) {
+	userId, ok := c.Get("userId")
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "userId not found"})
+		return
+	}
+
+	err := rc.Interactor.DeleteRecipesByUserID(c.Request.Context(), userId.(string))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete user recipes"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "account data deleted"})
+}
+
+func (rc *RecipeController) SearchRecipes(c *gin.Context) {
+	userId, ok := getUserIDFromContext(c)
+	if !ok {
+		return
+	}
+	ingredientsParam := c.Query("ingredients")
+	titleParam := c.Query("title")
+
+	var ingredients []string
+	if ingredientsParam != "" {
+		ingredients = strings.Split(ingredientsParam, ",")
+	}
+
+	result, err := rc.Interactor.SearchRecipes(
+		c.Request.Context(),
+		userId,
+		ingredients,
+		titleParam,
+	)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, result)
 }

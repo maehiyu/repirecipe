@@ -5,8 +5,9 @@ import (
 	"os"
 
 	"repirecipe/controller"
-	// "repirecipe/middleware"
+	"repirecipe/llmclient"
 	"repirecipe/repository"
+	"repirecipe/scraper"
 	"repirecipe/usecase"
 
 	"github.com/gin-gonic/gin"
@@ -42,7 +43,11 @@ func main() {
 		log.Fatal(err)
 	}
 
-	u := usecase.NewRecipeUsecase(repo)
+	// ScraperとLLMClientをDIで渡す
+	scraper := &scraper.RecipeScraper{}
+	llmClient := llmclient.NewLLMClient() // 実装に合わせて適切に初期化
+
+	u := usecase.NewRecipeUsecase(repo, scraper, llmClient)
 	c := controller.NewRecipeController(u)
 
 	r := gin.Default()
@@ -52,11 +57,11 @@ func main() {
 	protected.GET("/recipes", c.GetRecipes)
 	protected.POST("/recipes", c.CreateRecipe)
 	protected.PUT("/recipes", c.UpdateRecipe)
-	// protected.GET("/recipes/search", c.SearchRecipes)
+	protected.GET("/recipes/search", c.SearchRecipes)
 	protected.GET("/recipes/:id", c.GetRecipe)
 	protected.DELETE("/recipes/:id", c.DeleteRecipe)
-	// protected.POST("/recipes/fetch", c.FetchRecipe)
-	// protected.DELETE("/account", c.DeleteAccount)
+	protected.POST("/recipes/fetch", c.FetchRecipe)
+	protected.DELETE("/account", c.DeleteAccount)
 
 	r.Run(":8080")
 }

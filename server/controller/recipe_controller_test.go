@@ -41,11 +41,49 @@ func (m *mockRepo) Delete(ctx context.Context, recipeId string) error {
 	m.DeleteCalled = true
 	return nil
 }
+func (m *mockRepo) DeleteAllByUserID(ctx context.Context, userId string) error {
+	return nil
+}
+func (m *mockRepo) GetRecipesByIngredientVectors(ctx context.Context, userId string, ingredientVecs [][]float32) ([]*entity.RecipeSummary, error) {
+	return []*entity.RecipeSummary{}, nil
+}
+func (m *mockRepo) GetRecipesByTitleVector(ctx context.Context, userId string, titleVec []float32) ([]*entity.RecipeSummary, error) {
+	return []*entity.RecipeSummary{}, nil
+}
+
+type mockScraper struct{}
+
+func (m *mockScraper) ScrapeText(ctx context.Context, input string) (string, error) {
+	return "テスト用レシピテキスト", nil
+}
+
+type mockLLMClient struct{}
+
+func (m *mockLLMClient) GenerateRecipeDetail(ctx context.Context, text string) (*entity.RecipeDetail, error) {
+	return &entity.RecipeDetail{
+		Title: "テストレシピ",
+		IngredientGroups: []entity.IngredientGroup{
+			{
+				Title: ptr("材料"),
+				Ingredients: []entity.Ingredient{
+					{IngredientName: "鶏もも肉", Amount: ptr("300g")},
+				},
+			},
+		},
+	}, nil
+}
+
+// Add EmbedText to satisfy usecase.LLMClient interface
+func (m *mockLLMClient) EmbedText(ctx context.Context, text string) ([]float32, error) {
+	return []float32{0.1, 0.2, 0.3}, nil
+}
+
+func ptr(s string) *string { return &s }
 
 func TestCreateRecipe(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	mock := &mockRepo{}
-	uc := usecase.NewRecipeUsecase(mock)
+	uc := usecase.NewRecipeUsecase(mock, nil, nil) // Scraper, LLMClientをnilで追加
 	ctrl := controller.NewRecipeController(uc)
 	r := gin.New()
 	r.POST("/recipes", func(c *gin.Context) { c.Set("userId", "user-1"); ctrl.CreateRecipe(c) })
@@ -64,7 +102,7 @@ func TestCreateRecipe(t *testing.T) {
 func TestUpdateRecipe(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	mock := &mockRepo{}
-	uc := usecase.NewRecipeUsecase(mock)
+	uc := usecase.NewRecipeUsecase(mock, nil, nil) // Scraper, LLMClientをnilで追加
 	ctrl := controller.NewRecipeController(uc)
 	r := gin.New()
 	r.PUT("/recipes/:id", func(c *gin.Context) { ctrl.UpdateRecipe(c) })
@@ -83,7 +121,7 @@ func TestUpdateRecipe(t *testing.T) {
 func TestDeleteRecipe(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	mock := &mockRepo{}
-	uc := usecase.NewRecipeUsecase(mock)
+	uc := usecase.NewRecipeUsecase(mock, nil, nil) // Scraper, LLMClientをnilで追加
 	ctrl := controller.NewRecipeController(uc)
 	r := gin.New()
 	r.DELETE("/recipes/:id", func(c *gin.Context) { ctrl.DeleteRecipe(c) })
@@ -94,4 +132,24 @@ func TestDeleteRecipe(t *testing.T) {
 	r.ServeHTTP(w, req)
 	assert.Equal(t, http.StatusOK, w.Code)
 	assert.True(t, mock.DeleteCalled)
+}
+
+func TestFetchRecipe(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	mock := &mockRepo{}
+	scraper := &mockScraper{}
+	llm := &mockLLMClient{}
+	uc := usecase.NewRecipeUsecase(mock, scraper, llm)
+	ctrl := controller.NewRecipeController(uc)
+	r := gin.New()
+	r.POST("/recipes/fetch", func(c *gin.Context) { c.Set("userId", "user-1"); ctrl.FetchRecipe(c) })
+
+	form := "url=https://example.com/recipe"
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("POST", "/recipes/fetch", bytes.NewBufferString(form))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	r.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusCreated, w.Code)
+	assert.True(t, mock.CreateCalled)
 }

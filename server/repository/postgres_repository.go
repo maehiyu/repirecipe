@@ -3,10 +3,14 @@ package repository
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"log"
 	"repirecipe/entity"
 	"repirecipe/usecase"
+	"sort"
+	"time"
 
+	"github.com/pgvector/pgvector-go"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -31,13 +35,22 @@ func NewPostgresRepository(host, port, user, password, dbname string) (usecase.R
 }
 
 func (r *PostgresRepository) FindByID(ctx context.Context, id string) (*entity.RecipeDetail, error) {
+	cacheKey := "recipe:" + id
+	val, err := r.cache.Get(ctx, cacheKey).Result()
+	if err == nil && val != "" {
+		var rec entity.RecipeDetail
+		if err := json.Unmarshal([]byte(val), &rec); err == nil {
+			return &rec, nil
+		}
+	}
+
 	row := r.db.QueryRowContext(ctx, `
         SELECT recipe_id, title, thumbnail_url, video_url, memo, created_at, last_cooked_at
         FROM recipes
         WHERE recipe_id = $1
     `, id)
 	var rec entity.RecipeDetail
-	err := row.Scan(&rec.RecipeID, &rec.Title, &rec.ThumbnailURL, &rec.VideoURL, &rec.Memo, &rec.CreatedAt, &rec.LastCookedAt)
+	err = row.Scan(&rec.RecipeID, &rec.Title, &rec.ThumbnailURL, &rec.VideoURL, &rec.Memo, &rec.CreatedAt, &rec.LastCookedAt)
 	if err != nil {
 		log.Println("FindByID error:", err)
 		return nil, err
@@ -88,10 +101,21 @@ func (r *PostgresRepository) FindByID(ctx context.Context, id string) (*entity.R
 	}
 	rec.IngredientGroups = groups
 
+	b, _ := json.Marshal(rec)
+	r.cache.Set(ctx, cacheKey, b, 10*time.Minute)
 	return &rec, nil
 }
 
 func (r *PostgresRepository) FindAllByUserID(ctx context.Context, userId string) ([]*entity.RecipeSummary, error) {
+	cacheKey := "user_recipes:" + userId
+	val, err := r.cache.Get(ctx, cacheKey).Result()
+	if err == nil && val != "" {
+		var recipes []*entity.RecipeSummary
+		if err := json.Unmarshal([]byte(val), &recipes); err == nil {
+			return recipes, nil
+		}
+	}
+
 	rows, err := r.db.QueryContext(ctx, `
         SELECT recipe_id, title, thumbnail_url, created_at
         FROM recipes
@@ -159,6 +183,8 @@ func (r *PostgresRepository) FindAllByUserID(ctx context.Context, userId string)
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+	b, _ := json.Marshal(recipes)
+	r.cache.Set(ctx, cacheKey, b, 10*time.Minute)
 	return recipes, nil
 }
 
@@ -214,6 +240,7 @@ func (r *PostgresRepository) Create(ctx context.Context, userId string, recipe *
 		}
 	}
 
+	r.cache.Del(ctx, "user_recipes:"+userId)
 	return tx.Commit()
 }
 
@@ -283,6 +310,7 @@ func (r *PostgresRepository) Update(ctx context.Context, recipe *entity.RecipeDe
 		}
 	}
 
+	r.cache.Del(ctx, "recipe:"+recipe.RecipeID)
 	return tx.Commit()
 }
 
@@ -302,10 +330,154 @@ func (r *PostgresRepository) Delete(ctx context.Context, recipeId string) error 
 	_, err = r.db.ExecContext(ctx, `
 		DELETE FROM recipes WHERE recipe_id = $1
 	`, recipeId)
-	return err
+	if err != nil {
+		return err
+	}
+	r.cache.Del(ctx, "recipe:"+recipeId)
+	return nil
+}
+
+// ユーザーに紐づく全レシピと関連データを削除する
+func (r *PostgresRepository) DeleteAllByUserID(ctx context.Context, userId string) error {
+	// 1. ユーザーの全レシピIDを取得
+	rows, err := r.db.QueryContext(ctx, `
+        SELECT recipe_id FROM recipes WHERE user_id = $1
+    `, userId)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	var recipeIDs []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return err
+		}
+		recipeIDs = append(recipeIDs, id)
+	}
+
+	// 2. 各レシピごとにingredients, ingredient_groups, recipesを削除
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	for _, recipeId := range recipeIDs {
+		_, err := tx.ExecContext(ctx, `
+            DELETE FROM ingredients WHERE group_id IN (SELECT group_id FROM ingredient_groups WHERE recipe_id = $1)
+        `, recipeId)
+		if err != nil {
+			tx.Rollback()
+			return err
+		}
+		_, err = tx.ExecContext(ctx, `
+            DELETE FROM ingredient_groups WHERE recipe_id = $1
+        `, recipeId)
+		if err != nil {
+			tx.Rollback()
+			return err
+		}
+		_, err = tx.ExecContext(ctx, `
+            DELETE FROM recipes WHERE recipe_id = $1
+        `, recipeId)
+		if err != nil {
+			tx.Rollback()
+			return err
+		}
+		// キャッシュも削除
+		r.cache.Del(ctx, "recipe:"+recipeId)
+	}
+	// ユーザーのレシピ一覧キャッシュも削除
+	r.cache.Del(ctx, "user_recipes:"+userId)
+
+	return tx.Commit()
 }
 
 func (r *PostgresRepository) Search(ctx context.Context, query string) ([]*entity.RecipeSummary, error) {
 	// 実装例
 	return nil, nil
+}
+
+// ベクトル検索で材料名の類似レシピを取得（複数材料対応）
+func (r *PostgresRepository) GetRecipesByIngredientVectors(ctx context.Context, userId string, ingredientVecs [][]float32) ([]*entity.RecipeSummary, error) {
+	type scoredRecipe struct {
+		*entity.RecipeSummary
+		score float64
+	}
+	scoreMap := make(map[string]*scoredRecipe)
+
+	for _, vec := range ingredientVecs {
+		vecPg := pgvector.NewVector(vec)
+		rows, err := r.db.QueryContext(ctx, `
+			SELECT recipe_id, title, thumbnail_url, created_at,
+				   (title_vector <-> $2) AS score
+			FROM recipes
+			WHERE user_id = $1
+			ORDER BY score
+			LIMIT 10
+		`, userId, vecPg)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var rec entity.RecipeSummary
+			var score float64
+			if err := rows.Scan(&rec.RecipeID, &rec.Title, &rec.ThumbnailURL, &rec.CreatedAt, &score); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			if existing, ok := scoreMap[rec.RecipeID]; ok {
+				// より良いスコア（小さいほど近い）を採用
+				if score < existing.score {
+					existing.score = score
+				}
+			} else {
+				scoreMap[rec.RecipeID] = &scoredRecipe{RecipeSummary: &rec, score: score}
+			}
+		}
+		rows.Close()
+	}
+
+	// スコア順にソート
+	var scoredList []*scoredRecipe
+	for _, v := range scoreMap {
+		scoredList = append(scoredList, v)
+	}
+	sort.Slice(scoredList, func(i, j int) bool {
+		return scoredList[i].score < scoredList[j].score
+	})
+
+	// 結果を []*entity.RecipeSummary に変換
+	var results []*entity.RecipeSummary
+	for _, v := range scoredList {
+		results = append(results, v.RecipeSummary)
+	}
+	return results, nil
+}
+
+// タイトルのベクトル検索
+func (r *PostgresRepository) GetRecipesByTitleVector(ctx context.Context, userId string, titleVec []float32) ([]*entity.RecipeSummary, error) {
+	titleVecPg := pgvector.NewVector(titleVec)
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT recipe_id, title, thumbnail_url, created_at
+		FROM recipes
+		WHERE user_id = $1
+		ORDER BY title_vector <-> $2
+		LIMIT 20
+	`, userId, titleVecPg)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var results []*entity.RecipeSummary
+	for rows.Next() {
+		var rec entity.RecipeSummary
+		err := rows.Scan(&rec.RecipeID, &rec.Title, &rec.ThumbnailURL, &rec.CreatedAt)
+		if err != nil {
+			return nil, err
+		}
+		results = append(results, &rec)
+	}
+	return results, nil
 }
