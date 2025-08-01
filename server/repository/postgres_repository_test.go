@@ -35,10 +35,10 @@ func cleanupTestDB(repo *PostgresRepository) {
 }
 
 func insertTestRecipe(repo *PostgresRepository) {
-	repo.db.Exec(`INSERT INTO recipes (recipe_id, user_id, title, thumbnail_url, video_url, memo, created_at, last_cooked_at) VALUES ('recipe-1', 'user-1', 'テストレシピ1', NULL, NULL, NULL, NOW(), NULL);`)
+	repo.db.Exec(`INSERT INTO recipes (recipe_id, user_id, title, title_vector, thumbnail_url, media_url, memo, created_at, last_cooked_at) VALUES ('recipe-1', 'user-1', 'テストレシピ1', NULL, NULL, NULL, NULL, NOW(), NULL);`)
 	repo.db.Exec(`INSERT INTO ingredient_groups (group_id, recipe_id, title, order_num) VALUES ('group-1', 'recipe-1', 'title', 1);`)
-	repo.db.Exec(`INSERT INTO ingredients (id, group_id, ingredient_name, ingredient_amount, order_num) VALUES ('ing-1', 'group-1', '卵', '1個', 1);`)
-	repo.db.Exec(`INSERT INTO ingredients (id, group_id, ingredient_name, ingredient_amount, order_num) VALUES ('ing-2', 'group-1', '牛乳', '100ml', 2);`)
+	repo.db.Exec(`INSERT INTO ingredients (id, group_id, ingredient_name, ingredient_vector, ingredient_amount, order_num) VALUES ('ing-1', 'group-1', '卵', NULL, '1個', 1);`)
+	repo.db.Exec(`INSERT INTO ingredients (id, group_id, ingredient_name, ingredient_vector, ingredient_amount, order_num) VALUES ('ing-2', 'group-1', '牛乳', NULL, '100ml', 2);`)
 }
 
 func TestFindByID(t *testing.T) {
@@ -96,11 +96,13 @@ func TestCreateAndFindByID(t *testing.T) {
 	recipeId := "recipe-test"
 	groupId := "group-test"
 	newRecipe := &entity.RecipeDetail{
-		RecipeID: recipeId,
-		Title:    "新規レシピ",
+		RecipeID:     recipeId,
+		Title:        "新規レシピ",
+		ThumbnailURL: nil,
+		MediaURL:     nil,
 		IngredientGroups: []entity.IngredientGroup{{
 			GroupID:  groupId,
-			Title:    nil,
+			Title:    nil, // ポインタ型なら nil
 			OrderNum: 1,
 			Ingredients: []entity.Ingredient{{
 				ID:             "ing-test",
@@ -230,6 +232,7 @@ func TestDeleteAndFindByID(t *testing.T) {
 	// まず新規作成
 	recipeId := "recipe-delete"
 	groupId := "group-delete"
+	userId := "user-1"
 	newRecipe := &entity.RecipeDetail{
 		RecipeID: recipeId,
 		Title:    "削除レシピ",
@@ -245,21 +248,68 @@ func TestDeleteAndFindByID(t *testing.T) {
 			}},
 		}},
 	}
-	err := repo.Create(ctx, "user-1", newRecipe)
+	err := repo.Create(ctx, userId, newRecipe)
 	if err != nil {
 		t.Fatalf("unexpected error on create: %v", err)
 	}
 
-	// 削除
-	err = repo.Delete(ctx, recipeId)
+	// 削除（userIdも渡す）
+	err = repo.Delete(ctx, userId, recipeId)
 	if err != nil {
 		t.Fatalf("unexpected error on delete: %v", err)
 	}
 
-	// 検証（FindByIDでnilが返ること）
+	// 検証（FindByIDでエラーが返ること）
 	recipe, err := repo.FindByID(ctx, recipeId)
 	if err == nil && recipe != nil {
 		t.Errorf("expected recipe to be deleted, but found: %v", recipe)
+	}
+}
+
+// 権限チェックのテストも追加
+func TestDeleteWithWrongUser(t *testing.T) {
+	repo := setupTestDB()
+	cleanupTestDB(repo)
+	t.Cleanup(func() { cleanupTestDB(repo) })
+	ctx := context.Background()
+
+	// user-1でレシピ作成
+	recipeId := "recipe-delete-wrong-user"
+	groupId := "group-delete-wrong-user"
+	userId := "user-1"
+	newRecipe := &entity.RecipeDetail{
+		RecipeID: recipeId,
+		Title:    "削除テストレシピ",
+		IngredientGroups: []entity.IngredientGroup{{
+			GroupID:  groupId,
+			Title:    strPtr("削除グループ"),
+			OrderNum: 1,
+			Ingredients: []entity.Ingredient{{
+				ID:             "ing-delete-wrong",
+				IngredientName: "削除材料",
+				Amount:         strPtr("30g"),
+				OrderNum:       1,
+			}},
+		}},
+	}
+	err := repo.Create(ctx, userId, newRecipe)
+	if err != nil {
+		t.Fatalf("unexpected error on create: %v", err)
+	}
+
+	// user-2で削除しようとする（権限なし）
+	err = repo.Delete(ctx, "user-2", recipeId)
+	if err == nil {
+		t.Error("expected error when deleting with wrong user, but got nil")
+	}
+	if err.Error() != "recipe not found or access denied" {
+		t.Errorf("unexpected error message: %v", err.Error())
+	}
+
+	// レシピがまだ存在することを確認
+	recipe, err := repo.FindByID(ctx, recipeId)
+	if err != nil || recipe == nil {
+		t.Error("recipe should still exist after failed delete")
 	}
 }
 

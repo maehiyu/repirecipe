@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -21,6 +22,7 @@ type mockRepo struct {
 	CreateCalled bool
 	UpdateCalled bool
 	DeleteCalled bool
+	DeleteFunc   func(ctx context.Context, userId, recipeId string) error // 追加
 }
 
 func (m *mockRepo) FindByID(ctx context.Context, id string) (*entity.RecipeDetail, error) {
@@ -37,8 +39,12 @@ func (m *mockRepo) Update(ctx context.Context, recipe *entity.RecipeDetail) erro
 	m.UpdateCalled = true
 	return nil
 }
-func (m *mockRepo) Delete(ctx context.Context, recipeId string) error {
+func (m *mockRepo) Delete(ctx context.Context, userId string, recipeId string) error {
 	m.DeleteCalled = true
+	// DeleteFuncが設定されていればそれを使用、なければnilを返す
+	if m.DeleteFunc != nil {
+		return m.DeleteFunc(ctx, userId, recipeId)
+	}
 	return nil
 }
 func (m *mockRepo) DeleteAllByUserID(ctx context.Context, userId string) error {
@@ -120,18 +126,50 @@ func TestUpdateRecipe(t *testing.T) {
 
 func TestDeleteRecipe(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	mock := &mockRepo{}
-	uc := usecase.NewRecipeUsecase(mock, nil, nil) // Scraper, LLMClientをnilで追加
+
+	// モックの設定
+	mockRepo := &mockRepo{}
+	mockScraper := &mockScraper{}
+	mockLLM := &mockLLMClient{}
+
+	uc := usecase.NewRecipeUsecase(mockRepo, mockScraper, mockLLM)
 	ctrl := controller.NewRecipeController(uc)
+
+	// Ginルーターの設定
 	r := gin.New()
-	r.DELETE("/recipes/:id", func(c *gin.Context) { ctrl.DeleteRecipe(c) })
+	r.DELETE("/recipes/:id", func(c *gin.Context) {
+		c.Set("userId", "user-1")
+		ctrl.DeleteRecipe(c)
+	})
 
+	// 成功ケース
+	mockRepo.DeleteFunc = func(ctx context.Context, userId, recipeId string) error {
+		if userId == "user-1" && recipeId == "recipe-1" {
+			return nil
+		}
+		return errors.New("recipe not found or access denied")
+	}
+
+	// テストリクエスト作成（成功ケース）
 	w := httptest.NewRecorder()
-	req, _ := http.NewRequest("DELETE", "/recipes/test-id", nil)
-
+	req, _ := http.NewRequest("DELETE", "/recipes/recipe-1", nil)
 	r.ServeHTTP(w, req)
+
 	assert.Equal(t, http.StatusOK, w.Code)
-	assert.True(t, mock.DeleteCalled)
+	assert.True(t, mockRepo.DeleteCalled)
+
+	// 権限なしケース用のルーター
+	r2 := gin.New()
+	r2.DELETE("/recipes/:id", func(c *gin.Context) {
+		c.Set("userId", "user-2") // 違うユーザー
+		ctrl.DeleteRecipe(c)
+	})
+
+	w2 := httptest.NewRecorder()
+	req2, _ := http.NewRequest("DELETE", "/recipes/recipe-1", nil)
+	r2.ServeHTTP(w2, req2)
+
+	assert.Equal(t, http.StatusNotFound, w2.Code)
 }
 
 func TestFetchRecipe(t *testing.T) {

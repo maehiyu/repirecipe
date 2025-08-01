@@ -100,8 +100,18 @@ func (rc *RecipeController) UpdateRecipe(c *gin.Context) {
 func (rc *RecipeController) DeleteRecipe(c *gin.Context) {
 	id := c.Param("id")
 
-	if err := rc.Interactor.DeleteRecipe(c.Request.Context(), id); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+	userId, ok := getUserIDFromContext(c)
+	if !ok {
+		return
+	}
+
+	// Repository層でuserIdとrecipeIdの両方をチェック
+	if err := rc.Interactor.DeleteRecipe(c.Request.Context(), userId, id); err != nil {
+		if err.Error() == "recipe not found or access denied" {
+			c.JSON(http.StatusNotFound, gin.H{"error": "recipe not found"})
+		} else {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		}
 		log.Println("Error deleting recipe:", err)
 		return
 	}
@@ -154,8 +164,11 @@ func (rc *RecipeController) SearchRecipes(c *gin.Context) {
 	if !ok {
 		return
 	}
+
 	ingredientsParam := c.Query("ingredients")
 	titleParam := c.Query("title")
+
+	log.Printf("Search request - userId: %s, ingredients: %s, title: %s", userId, ingredientsParam, titleParam)
 
 	var ingredients []string
 	if ingredientsParam != "" {
@@ -169,6 +182,7 @@ func (rc *RecipeController) SearchRecipes(c *gin.Context) {
 		titleParam,
 	)
 	if err != nil {
+		log.Printf("Search error: %v", err) // エラーログ追加
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	}

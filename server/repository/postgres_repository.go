@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"log"
 	"repirecipe/entity"
 	"repirecipe/usecase"
@@ -14,8 +15,6 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-// usecase.Repository を実装
-// 実装名は PostgresRepository
 type PostgresRepository struct {
 	db    *sql.DB
 	cache *redis.Client
@@ -45,12 +44,12 @@ func (r *PostgresRepository) FindByID(ctx context.Context, id string) (*entity.R
 	}
 
 	row := r.db.QueryRowContext(ctx, `
-        SELECT recipe_id, title, thumbnail_url, video_url, memo, created_at, last_cooked_at
+        SELECT recipe_id, title, thumbnail_url, media_url, memo, created_at, last_cooked_at
         FROM recipes
         WHERE recipe_id = $1
     `, id)
 	var rec entity.RecipeDetail
-	err = row.Scan(&rec.RecipeID, &rec.Title, &rec.ThumbnailURL, &rec.VideoURL, &rec.Memo, &rec.CreatedAt, &rec.LastCookedAt)
+	err = row.Scan(&rec.RecipeID, &rec.Title, &rec.ThumbnailURL, &rec.MediaURL, &rec.Memo, &rec.CreatedAt, &rec.LastCookedAt)
 	if err != nil {
 		log.Println("FindByID error:", err)
 		return nil, err
@@ -123,15 +122,14 @@ func (r *PostgresRepository) FindAllByUserID(ctx context.Context, userId string)
         ORDER BY created_at DESC
     `, userId)
 	if err != nil {
-		log.Println("FindAll error:", err)
 		return nil, err
 	}
 	defer rows.Close()
 
 	var recipes []*entity.RecipeSummary
 	for rows.Next() {
-		var rec entity.RecipeSummary
-		err := rows.Scan(&rec.RecipeID, &rec.Title, &rec.ThumbnailURL, &rec.CreatedAt)
+		var recipe entity.RecipeSummary
+		err := rows.Scan(&recipe.RecipeID, &recipe.Title, &recipe.ThumbnailURL, &recipe.CreatedAt)
 		if err != nil {
 			return nil, err
 		}
@@ -142,7 +140,7 @@ func (r *PostgresRepository) FindAllByUserID(ctx context.Context, userId string)
             FROM ingredient_groups
             WHERE recipe_id = $1
             ORDER BY order_num ASC
-        `, rec.RecipeID)
+        `, recipe.RecipeID)
 		if err != nil {
 			return nil, err
 		}
@@ -176,9 +174,9 @@ func (r *PostgresRepository) FindAllByUserID(ctx context.Context, userId string)
 			ingRows.Close()
 		}
 		groupRows.Close()
-		rec.IngredientsName = ingredients
+		recipe.IngredientsName = ingredients
 
-		recipes = append(recipes, &rec)
+		recipes = append(recipes, &recipe)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -201,7 +199,7 @@ func (r *PostgresRepository) Create(ctx context.Context, userId string, recipe *
 
 	// レシピ本体を挿入
 	query := `
-        INSERT INTO recipes (recipe_id, user_id, title, thumbnail_url, video_url, memo, created_at, last_cooked_at)
+        INSERT INTO recipes (recipe_id, user_id, title, thumbnail_url, media_url, memo, created_at, last_cooked_at)
         VALUES ($1, $2, $3, $4, $5, $6, NOW(), $7)
     `
 	_, err = tx.ExecContext(ctx, query,
@@ -209,7 +207,7 @@ func (r *PostgresRepository) Create(ctx context.Context, userId string, recipe *
 		userId,
 		recipe.Title,
 		recipe.ThumbnailURL,
-		recipe.VideoURL,
+		recipe.MediaURL,
 		recipe.Memo,
 		recipe.LastCookedAt,
 	)
@@ -257,12 +255,12 @@ func (r *PostgresRepository) Update(ctx context.Context, recipe *entity.RecipeDe
 
 	// レシピ本体を更新
 	_, err = tx.ExecContext(ctx, `
-        UPDATE recipes SET title = $1, thumbnail_url = $2, video_url = $3, memo = $4, last_cooked_at = $5
+        UPDATE recipes SET title = $1, thumbnail_url = $2, media_url = $3, memo = $4, last_cooked_at = $5
         WHERE recipe_id = $6
     `,
 		recipe.Title,
 		recipe.ThumbnailURL,
-		recipe.VideoURL,
+		recipe.MediaURL,
 		recipe.Memo,
 		recipe.LastCookedAt,
 		recipe.RecipeID,
@@ -314,27 +312,54 @@ func (r *PostgresRepository) Update(ctx context.Context, recipe *entity.RecipeDe
 	return tx.Commit()
 }
 
-func (r *PostgresRepository) Delete(ctx context.Context, recipeId string) error {
-	_, err := r.db.ExecContext(ctx, `
-		DELETE FROM ingredients WHERE group_id IN (SELECT group_id FROM ingredient_groups WHERE recipe_id = $1)
-	`, recipeId)
+func (r *PostgresRepository) Delete(ctx context.Context, userId string, recipeId string) error {
+	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
-	_, err = r.db.ExecContext(ctx, `
-		DELETE FROM ingredient_groups WHERE recipe_id = $1
-	`, recipeId)
+	defer tx.Rollback()
+
+	// userIdとrecipeIdの両方でマッチするかチェック
+	var count int
+	err = tx.QueryRowContext(ctx, `
+        SELECT COUNT(*) FROM recipes 
+        WHERE recipe_id = $1 AND user_id = $2
+    `, recipeId, userId).Scan(&count)
 	if err != nil {
 		return err
 	}
-	_, err = r.db.ExecContext(ctx, `
-		DELETE FROM recipes WHERE recipe_id = $1
-	`, recipeId)
+	if count == 0 {
+		return errors.New("recipe not found or access denied")
+	}
+
+	// 削除処理（ingredients → ingredient_groups → recipes の順）
+	_, err = tx.ExecContext(ctx, `
+        DELETE FROM ingredients 
+        WHERE group_id IN (SELECT group_id FROM ingredient_groups WHERE recipe_id = $1)
+    `, recipeId)
 	if err != nil {
 		return err
 	}
+
+	_, err = tx.ExecContext(ctx, `
+        DELETE FROM ingredient_groups WHERE recipe_id = $1
+    `, recipeId)
+	if err != nil {
+		return err
+	}
+
+	_, err = tx.ExecContext(ctx, `
+        DELETE FROM recipes WHERE recipe_id = $1 AND user_id = $2
+    `, recipeId, userId)
+	if err != nil {
+		return err
+	}
+
+	// キャッシュクリア
 	r.cache.Del(ctx, "recipe:"+recipeId)
-	return nil
+	r.cache.Del(ctx, "user_recipes:"+userId)
+
+	return tx.Commit()
 }
 
 // ユーザーに紐づく全レシピと関連データを削除する
@@ -459,12 +484,12 @@ func (r *PostgresRepository) GetRecipesByIngredientVectors(ctx context.Context, 
 func (r *PostgresRepository) GetRecipesByTitleVector(ctx context.Context, userId string, titleVec []float32) ([]*entity.RecipeSummary, error) {
 	titleVecPg := pgvector.NewVector(titleVec)
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT recipe_id, title, thumbnail_url, created_at
-		FROM recipes
-		WHERE user_id = $1
-		ORDER BY title_vector <-> $2
-		LIMIT 20
-	`, userId, titleVecPg)
+        SELECT recipe_id, title, thumbnail_url, created_at
+        FROM recipes
+        WHERE user_id = $1
+        ORDER BY title_vector <-> $2
+        LIMIT 20
+    `, userId, titleVecPg)
 	if err != nil {
 		return nil, err
 	}

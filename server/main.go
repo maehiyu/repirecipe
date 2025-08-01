@@ -20,6 +20,7 @@ import (
 // **PUT**    /recipes                  : レシピを更新
 // **GET**    /recipes/search           : レシピを検索
 // **GET**    /recipes/:id              : レシピ取得
+// **DELETE** /recipes/:id              : レシピ削除
 // **POST**   /recipes/fetch            : 外部情報(URL)からレシピを新規作成
 // **POST**   /recipes/fetch/instagram  : Instagramからレシピ取得
 // **DELETE** /account                  : アカウントに基づくデータの削除

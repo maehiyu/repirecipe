@@ -12,4 +12,10 @@
 
 
 ## コンポーネント図
-![alt text](uml_component.png)
+
+### server
+![alt text](uml_component_server.png)
+
+
+### client
+![alt text](uml_component_client.png)

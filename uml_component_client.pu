@@ -1,0 +1,32 @@
+@startuml
+
+package "Data" {
+    [RecipeAPIDataSource]
+    [RecipeCacheDataSource]
+    [ImageUploadDataSource]
+    [CognitoAuthDataSource]
+    [RecipeRepositoryImpl] 
+
+    [RecipeAPIDataSource] <.. [RecipeRepositoryImpl]
+    [RecipeCacheDataSource] <.. [RecipeRepositoryImpl]
+    [ImageUploadDataSource] <.. [RecipeRepositoryImpl]
+    [CognitoAuthDataSource] <.. [RecipeRepositoryImpl]
+}
+
+package "Domain" {
+    [Entities]
+    [UseCase]
+    [RecipeRepositoryProtocol] <<interface>>
+
+    [Entities] <- [UseCase]
+    [UseCase] -> [RecipeRepositoryProtocol] <<interface>>
+}
+
+package "Presentation" {
+    [ViewModels] <- [Views]
+}
+
+[RecipeRepositoryImpl] ..|> [RecipeRepositoryProtocol] : implements
+[UseCase] <-- [ViewModels]
+
+@enduml

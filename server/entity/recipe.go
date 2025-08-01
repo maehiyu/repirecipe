@@ -2,14 +2,15 @@ package entity
 
 import (
 	"errors"
+	"time"
 )
 
 type RecipeSummary struct {
-	RecipeID        string   `json:"recipeId"`
-	Title           string   `json:"title"`
-	ThumbnailURL    *string  `json:"thumbnailUrl"`
-	IngredientsName []string `json:"ingredientsName"`
-	CreatedAt       string   `json:"createdAt"`
+	RecipeID        string     `json:"recipeId"`
+	Title           string     `json:"title"`
+	ThumbnailURL    *string     `json:"thumbnailUrl"`
+	CreatedAt       time.Time  `json:"createdAt"`
+	IngredientsName []string   `json:"ingredientsName"`
 }
 
 type Ingredient struct {
@@ -17,7 +18,7 @@ type Ingredient struct {
 	IngredientName   string    `json:"ingredientName"`
 	Amount           *string   `json:"amount"`
 	OrderNum         int       `json:"orderNum"`
-	IngredientVector []float32 `json:"-"` // ベクトルはAPIレスポンスに含めない
+	IngredientVector []float32 `json:"-"` 
 }
 
 func (i *Ingredient) Validate() error {
@@ -37,12 +38,12 @@ type IngredientGroup struct {
 type RecipeDetail struct {
 	RecipeID         string            `json:"recipeId"`
 	Title            string            `json:"title"`
-	ThumbnailURL     *string           `json:"thumbnailUrl,omitempty"`
-	VideoURL         *string           `json:"videoUrl,omitempty"`
-	IngredientGroups []IngredientGroup `json:"ingredientGroups,omitempty"`
-	Memo             *string           `json:"memo"`
-	CreatedAt        string            `json:"createdAt,omitempty"`
-	LastCookedAt     *string           `json:"lastCookedAt,omitempty"`
+	ThumbnailURL     *string            `json:"thumbnailUrl"`
+	MediaURL         *string            `json:"mediaUrl"`
+	Memo             *string            `json:"memo"`
+	CreatedAt        time.Time         `json:"createdAt"`
+	LastCookedAt     *time.Time        `json:"lastCookedAt"`
+	IngredientGroups []IngredientGroup `json:"ingredientGroups"`
 	TitleVector      []float32         `json:"-"`
 }
 
