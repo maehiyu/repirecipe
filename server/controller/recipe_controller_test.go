@@ -41,7 +41,7 @@ func (m *mockRepo) Update(ctx context.Context, recipe *entity.RecipeDetail) erro
 }
 func (m *mockRepo) Delete(ctx context.Context, userId string, recipeId string) error {
 	m.DeleteCalled = true
-	// DeleteFuncが設定されていればそれを使用、なければnilを返す
+
 	if m.DeleteFunc != nil {
 		return m.DeleteFunc(ctx, userId, recipeId)
 	}

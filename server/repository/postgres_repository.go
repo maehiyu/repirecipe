@@ -77,21 +77,23 @@ func (r *PostgresRepository) FindByID(ctx context.Context, id string) (*entity.R
 		}
 		// 材料取得
 		ingRows, err := r.db.QueryContext(ctx, `
-            SELECT id, ingredient_name, ingredient_amount, order_num
-            FROM ingredients
-            WHERE group_id = $1
-            ORDER BY order_num ASC
-        `, group.GroupID)
+    SELECT id, ingredient_name, ingredient_amount, order_num, ingredient_vector
+    FROM ingredients
+    WHERE group_id = $1
+    ORDER BY order_num ASC
+`, group.GroupID)
 		if err != nil {
 			return nil, err
 		}
 		var ingredients []entity.Ingredient
 		for ingRows.Next() {
 			var ing entity.Ingredient
-			if err := ingRows.Scan(&ing.ID, &ing.IngredientName, &ing.Amount, &ing.OrderNum); err != nil {
+			var vec pgvector.Vector
+			if err := ingRows.Scan(&ing.ID, &ing.IngredientName, &ing.Amount, &ing.OrderNum, &vec); err != nil {
 				ingRows.Close()
 				return nil, err
 			}
+			ing.IngredientVector = vec.Slice()
 			ingredients = append(ingredients, ing)
 		}
 		ingRows.Close()
@@ -199,9 +201,9 @@ func (r *PostgresRepository) Create(ctx context.Context, userId string, recipe *
 
 	// レシピ本体を挿入
 	query := `
-        INSERT INTO recipes (recipe_id, user_id, title, thumbnail_url, media_url, memo, created_at, last_cooked_at)
-        VALUES ($1, $2, $3, $4, $5, $6, NOW(), $7)
-    `
+    INSERT INTO recipes (recipe_id, user_id, title, thumbnail_url, media_url, memo, created_at, last_cooked_at, title_vector)
+    VALUES ($1, $2, $3, $4, $5, $6, NOW(), $7, $8)
+`
 	_, err = tx.ExecContext(ctx, query,
 		recipe.RecipeID,
 		userId,
@@ -210,6 +212,7 @@ func (r *PostgresRepository) Create(ctx context.Context, userId string, recipe *
 		recipe.MediaURL,
 		recipe.Memo,
 		recipe.LastCookedAt,
+		pgvector.NewVector(recipe.TitleVector), // 追加
 	)
 	if err != nil {
 		tx.Rollback()
@@ -228,9 +231,9 @@ func (r *PostgresRepository) Create(ctx context.Context, userId string, recipe *
 		}
 		for ii, ing := range group.Ingredients {
 			_, err := tx.ExecContext(ctx, `
-                INSERT INTO ingredients (id, group_id, ingredient_name, ingredient_amount, order_num)
-                VALUES ($1, $2, $3, $4, $5)
-            `, ing.ID, group.GroupID, ing.IngredientName, ing.Amount, ii+1)
+                INSERT INTO ingredients (id, group_id, ingredient_name, ingredient_amount, order_num, ingredient_vector)
+                VALUES ($1, $2, $3, $4, $5, $6)
+            `, ing.ID, group.GroupID, ing.IngredientName, ing.Amount, ii+1, pgvector.NewVector(ing.IngredientVector))
 			if err != nil {
 				tx.Rollback()
 				return err
@@ -255,14 +258,15 @@ func (r *PostgresRepository) Update(ctx context.Context, recipe *entity.RecipeDe
 
 	// レシピ本体を更新
 	_, err = tx.ExecContext(ctx, `
-        UPDATE recipes SET title = $1, thumbnail_url = $2, media_url = $3, memo = $4, last_cooked_at = $5
-        WHERE recipe_id = $6
-    `,
+    UPDATE recipes SET title = $1, thumbnail_url = $2, media_url = $3, memo = $4, last_cooked_at = $5, title_vector = $6
+    WHERE recipe_id = $7
+`,
 		recipe.Title,
 		recipe.ThumbnailURL,
 		recipe.MediaURL,
 		recipe.Memo,
 		recipe.LastCookedAt,
+		pgvector.NewVector(recipe.TitleVector),
 		recipe.RecipeID,
 	)
 	if err != nil {
@@ -423,24 +427,29 @@ func (r *PostgresRepository) Search(ctx context.Context, query string) ([]*entit
 	return nil, nil
 }
 
-// ベクトル検索で材料名の類似レシピを取得（複数材料対応）
+// 材料ベクトルでの検索を追加
 func (r *PostgresRepository) GetRecipesByIngredientVectors(ctx context.Context, userId string, ingredientVecs [][]float32) ([]*entity.RecipeSummary, error) {
 	type scoredRecipe struct {
 		*entity.RecipeSummary
-		score float64
+		totalScore float64
+		matchCount int
+		bestScore  float64
 	}
 	scoreMap := make(map[string]*scoredRecipe)
 
 	for _, vec := range ingredientVecs {
 		vecPg := pgvector.NewVector(vec)
 		rows, err := r.db.QueryContext(ctx, `
-			SELECT recipe_id, title, thumbnail_url, created_at,
-				   (title_vector <-> $2) AS score
-			FROM recipes
-			WHERE user_id = $1
-			ORDER BY score
-			LIMIT 10
-		`, userId, vecPg)
+            SELECT DISTINCT r.recipe_id, r.title, r.thumbnail_url, r.created_at,
+                   MIN(i.ingredient_vector <-> $2) AS score
+            FROM recipes r
+            JOIN ingredient_groups ig ON r.recipe_id = ig.recipe_id  
+            JOIN ingredients i ON ig.group_id = i.group_id
+            WHERE r.user_id = $1 AND i.ingredient_vector IS NOT NULL
+            GROUP BY r.recipe_id, r.title, r.thumbnail_url, r.created_at
+            ORDER BY score
+            LIMIT 10
+        `, userId, vecPg)
 		if err != nil {
 			return nil, err
 		}
@@ -452,24 +461,38 @@ func (r *PostgresRepository) GetRecipesByIngredientVectors(ctx context.Context, 
 				return nil, err
 			}
 			if existing, ok := scoreMap[rec.RecipeID]; ok {
-				// より良いスコア（小さいほど近い）を採用
-				if score < existing.score {
-					existing.score = score
+				// 既存レシピの場合：マッチ数を増やし、スコアを更新
+				existing.matchCount++
+				existing.totalScore += score
+				if score < existing.bestScore {
+					existing.bestScore = score
 				}
 			} else {
-				scoreMap[rec.RecipeID] = &scoredRecipe{RecipeSummary: &rec, score: score}
+				// 新しいレシピの場合
+				scoreMap[rec.RecipeID] = &scoredRecipe{
+					RecipeSummary: &rec,
+					totalScore:    score,
+					matchCount:    1,
+					bestScore:     score,
+				}
 			}
 		}
 		rows.Close()
 	}
 
-	// スコア順にソート
+	// 最終スコア計算：マッチ数ボーナス + 平均スコア
 	var scoredList []*scoredRecipe
 	for _, v := range scoreMap {
+		// マッチ数が多いほど良いスコア（例：マッチ数ボーナス）
+		matchBonus := float64(v.matchCount) * 0.1
+		avgScore := v.totalScore / float64(v.matchCount)
+		v.totalScore = avgScore - matchBonus // ボーナス分を引く（小さいほど良い）
 		scoredList = append(scoredList, v)
 	}
+
+	// 最終スコア順でソート
 	sort.Slice(scoredList, func(i, j int) bool {
-		return scoredList[i].score < scoredList[j].score
+		return scoredList[i].totalScore < scoredList[j].totalScore
 	})
 
 	// 結果を []*entity.RecipeSummary に変換

@@ -2,8 +2,7 @@ package usecase
 
 import (
 	"context"
-	"fmt"
-	"log"
+	"errors"
 	"repirecipe/entity"
 
 	"github.com/google/uuid"
@@ -152,82 +151,23 @@ func (u *RecipeUsecase) DeleteRecipesByUserID(ctx context.Context, userId string
 }
 
 func (u *RecipeUsecase) SearchRecipes(ctx context.Context, userId string, ingredients []string, title string) ([]*entity.RecipeSummary, error) {
-	log.Printf("SearchRecipes called - userId: %s, ingredients: %v, title: %s", userId, ingredients, title)
-
-	// 材料検索とタイトル検索の両方が空の場合
-	if len(ingredients) == 0 && title == "" {
-		return []*entity.RecipeSummary{}, nil
-	}
-
-	var results []*entity.RecipeSummary
-	var err error
-
-	// 材料検索
 	if len(ingredients) > 0 {
-		log.Printf("Searching by ingredients: %v", ingredients)
-		// EmbedTextの呼び出しでエラーが起きている可能性
-		ingredientVecs := make([][]float32, len(ingredients))
-		for i, ingredient := range ingredients {
-			vec, embedErr := u.LLMClient.EmbedText(ctx, ingredient)
-			if embedErr != nil {
-				log.Printf("Error embedding ingredient '%s': %v", ingredient, embedErr)
-				return nil, fmt.Errorf("failed to embed ingredient '%s': %w", ingredient, embedErr)
+		var ingredientVecs [][]float32
+		for _, name := range ingredients {
+			vec, err := u.LLMClient.EmbedText(ctx, name)
+			if err != nil {
+				return nil, err
 			}
-			ingredientVecs[i] = vec
+			ingredientVecs = append(ingredientVecs, vec)
 		}
-
-		results, err = u.Repo.GetRecipesByIngredientVectors(ctx, userId, ingredientVecs)
-		if err != nil {
-			log.Printf("Error getting recipes by ingredient vectors: %v", err)
-			return nil, fmt.Errorf("failed to search by ingredients: %w", err)
-		}
+		return u.Repo.GetRecipesByIngredientVectors(ctx, userId, ingredientVecs)
 	}
-
-	// タイトル検索
 	if title != "" {
-		log.Printf("Searching by title: %s", title)
-		titleVec, embedErr := u.LLMClient.EmbedText(ctx, title)
-		if embedErr != nil {
-			log.Printf("Error embedding title '%s': %v", title, embedErr)
-			return nil, fmt.Errorf("failed to embed title: %w", embedErr)
-		}
-
-		titleResults, err := u.Repo.GetRecipesByTitleVector(ctx, userId, titleVec)
+		titleVec, err := u.LLMClient.EmbedText(ctx, title)
 		if err != nil {
-			log.Printf("Error getting recipes by title vector: %v", err)
-			return nil, fmt.Errorf("failed to search by title: %w", err)
+			return nil, err
 		}
-
-		if len(ingredients) == 0 {
-			results = titleResults
-		} else {
-			// 材料検索とタイトル検索の結果をマージ
-			results = mergeResults(results, titleResults)
-		}
+		return u.Repo.GetRecipesByTitleVector(ctx, userId, titleVec)
 	}
-
-	log.Printf("Search completed, found %d results", len(results))
-	return results, nil
-}
-
-func mergeResults(ingredientResults, titleResults []*entity.RecipeSummary) []*entity.RecipeSummary {
-	// 簡単な実装：IDでユニークにする
-	seen := make(map[string]bool)
-	var merged []*entity.RecipeSummary
-
-	for _, r := range ingredientResults {
-		if !seen[r.RecipeID] {
-			merged = append(merged, r)
-			seen[r.RecipeID] = true
-		}
-	}
-
-	for _, r := range titleResults {
-		if !seen[r.RecipeID] {
-			merged = append(merged, r)
-			seen[r.RecipeID] = true
-		}
-	}
-
-	return merged
+	return nil, errors.New("no search parameter")
 }

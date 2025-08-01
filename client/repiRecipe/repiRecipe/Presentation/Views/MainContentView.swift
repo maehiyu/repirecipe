@@ -36,7 +36,7 @@ struct RecipeListView: View {
     @StateObject private var viewModel = DIContainer.shared.recipeListViewModel
     
     var body: some View {
-        NavigationView {
+        NavigationStack {
             VStack {
                 if viewModel.isLoading {
                     ProgressView("読み込み中...")
@@ -79,9 +79,11 @@ struct RecipeListView: View {
                             .padding(.vertical, 4)
                         }
                     }
+                    .listStyle(.plain)
                 }
             }
             .navigationTitle("レシピ")
+            .navigationBarTitleDisplayMode(.large)
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button("更新") {
@@ -320,7 +322,7 @@ struct RecipeCreateView: View {
     @State private var showingDiscardAlert = false
     
     var body: some View {
-        NavigationView {
+        NavigationStack {
             Form {
                 Section("基本情報") {
                     TextField("レシピタイトル", text: $viewModel.title)
@@ -410,6 +412,45 @@ struct RecipeCreateView: View {
             Text("レシピが作成されました")
         }
     }
+    
+    // MARK: - Helper Methods for Bindings
+    
+    private func createGroupTitleBinding(groupIndex: Int, group: IngredientGroup) -> Binding<String> {
+        return Binding(
+            get: { group.title ?? "" },
+            set: { newValue in
+                viewModel.updateIngredientGroupTitle(at: groupIndex, title: newValue)
+            }
+        )
+    }
+    
+    private func createIngredientNameBinding(groupIndex: Int, ingredientIndex: Int, ingredient: Ingredient) -> Binding<String> {
+        return Binding(
+            get: { ingredient.ingredientName },
+            set: { newValue in
+                viewModel.updateIngredient(
+                    groupIndex: groupIndex,
+                    ingredientIndex: ingredientIndex,
+                    name: newValue,
+                    amount: ingredient.amount ?? ""
+                )
+            }
+        )
+    }
+    
+    private func createIngredientAmountBinding(groupIndex: Int, ingredientIndex: Int, ingredient: Ingredient) -> Binding<String> {
+        return Binding(
+            get: { ingredient.amount ?? "" },
+            set: { newValue in
+                viewModel.updateIngredient(
+                    groupIndex: groupIndex,
+                    ingredientIndex: ingredientIndex,
+                    name: ingredient.ingredientName,
+                    amount: newValue
+                )
+            }
+        )
+    }
 }
 
 // MARK: - 設定View
@@ -420,7 +461,7 @@ struct SettingsView: View {
     @State private var showingDeleteAccountAlert = false
     
     var body: some View {
-        NavigationView {
+        NavigationStack {
             List {
                 // ユーザー情報セクション
                 Section("アカウント") {
